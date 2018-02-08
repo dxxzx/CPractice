@@ -1,0 +1,1 @@
+enum boolean { NO, YES };
