@@ -12,22 +12,22 @@ AR := $(CROSS_COMPILE)ar
 all: encode_yuv_2_h264 mp4_2_mkv use_avfilter convert_format add_video_stream print_codec_ctx
 
 encode_yuv_2_h264:
-	$(CC) $(CFLAGS) -lavutil -lavcodec -lswresample -o $@ $@.c 
+	$(CC) $(CFLAGS) -o $@ $@.c -lavutil -lavcodec -lswresample
 
 mp4_2_mkv:
-	$(CC) $(CFLAGS) -lavutil -lavcodec -lavformat -lswresample -o $@ $@.c 
+	$(CC) $(CFLAGS) -o $@ $@.c  -lavutil -lavcodec -lavformat -lswresample
 
 use_avfilter:
-	$(CC) $(CFLAGS) -lavutil -lavformat -lavfilter -lavcodec -o $@ $@.c
+	$(CC) $(CFLAGS) -o $@ $@.c -lavutil -lavformat -lavfilter -lavcodec
 
 convert_format:
-	$(CC) $(CFLAGS) -lavutil -lavformat -lavcodec -o $@ $@.c
+	$(CC) $(CFLAGS) -o $@ $@.c -lavutil -lavformat -lavcodec
 
 add_video_stream:
-	$(CC) $(CFLAGS) -lavutil -lavformat -lavcodec -lavfilter -o $@ $@.c
+	$(CC) $(CFLAGS) -o $@ $@.c -lavutil -lavformat -lavcodec -lavfilter
 
 print_codec_ctx:
-	$(CC) $(CFLAGS) -lavutil -lavformat -lavcodec -lavfilter -o $@ $@.c
+	$(CC) $(CFLAGS) -o $@ $@.c -lavutil -lavformat -lavcodec -lavfilter
 
 .PHONY: clean
 clean:
