@@ -32,6 +32,13 @@
 #include <libavfilter/avfiltergraph.h>
 #include <libavfilter/buffersink.h>
 #include <libavfilter/buffersrc.h>
+#include <libavutil/opt.h>
+
+/**
+ * 
+ */
+AVFilterContext *buffersrc_ctx, *buffersink_ctx;
+AVFilterGraph *filter_graph;
 
 static void log_packet(const AVFormatContext *fmt_ctx, const AVPacket *pkt, const char *tag)
 {
@@ -71,6 +78,89 @@ static void copy_codec_ctx(AVCodecContext *dst, AVCodecContext *src)
     dst->pix_fmt = src->pix_fmt;
 }
 
+static void dump_frame(AVFrame *frame)
+{
+    fprintf(stdout, "AVFrame:\n");
+    fprintf(stdout, "    size: %dx%d\n", frame->width, frame->height);
+    fprintf(stdout, "    nb_samples: %d\n", frame->nb_samples);
+    fprintf(stdout, "    format: %d\n", frame->format);
+    fprintf(stdout, "    picture_type: %d\n", frame->pict_type);
+    fprintf(stdout, "    pkt_dts: %d\n", frame->pkt_dts);
+    fprintf(stdout, "    pts: %d\n", frame->pts);
+}
+
+static int init_filter(const char *args, const char *filter_descr)
+{
+     // prepare for filter
+    int ret;
+    avfilter_register_all();
+    AVFilter *buffersrc  = avfilter_get_by_name("buffer");
+    AVFilter *buffersink = avfilter_get_by_name("buffersink");
+    AVFilterInOut *outputs = avfilter_inout_alloc();
+    AVFilterInOut *inputs  = avfilter_inout_alloc();
+    enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_YUV420P, AV_PIX_FMT_NONE };
+    AVBufferSinkParams *buffersink_params;
+
+    filter_graph = avfilter_graph_alloc();//为FilterGraph分配内存。
+    if (!outputs || !inputs || !filter_graph) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+   
+    //创建并向FilterGraph中添加一个Filter。
+    ret = avfilter_graph_create_filter(&buffersrc_ctx, buffersrc, "in",
+        args, NULL, filter_graph);
+    if (ret < 0) {
+        printf("line %d, Cannot create buffer source caused by '%s'\n", __LINE__, av_err2str(ret));
+        return ret;
+    }
+
+    /* buffer video sink: to terminate the filter chain. */
+    ret = avfilter_graph_create_filter(&buffersink_ctx, buffersink, "out",
+        NULL, NULL, filter_graph);
+    if (ret < 0) {
+        fprintf(stderr, "line %d, cannot create buffer sink caused by '%s'\n", __LINE__, av_err2str(ret));
+        return ret;
+    }
+
+    ret = av_opt_set_int_list(buffersink_ctx, "pix_fmts", pix_fmts,
+                              AV_PIX_FMT_NONE, AV_OPT_SEARCH_CHILDREN);
+    if (ret < 0) {
+        av_log(NULL, AV_LOG_ERROR, "Cannot set output pixel format\n");
+        goto end;
+    }
+
+
+    /* Endpoints for the filter graph. */
+    outputs->name       = av_strdup("in");
+    outputs->filter_ctx = buffersrc_ctx;
+    outputs->pad_idx    = 0;
+    outputs->next       = NULL;
+
+    inputs->name       = av_strdup("out");
+    inputs->filter_ctx = buffersink_ctx;
+    inputs->pad_idx    = 0;
+    inputs->next       = NULL;
+
+    //将一串通过字符串描述的Graph添加到FilterGraph中。
+    if ((ret = avfilter_graph_parse_ptr(filter_graph, filter_descr,
+        &inputs, &outputs, NULL)) < 0) {
+        fprintf(stderr, "line %d, avfilter_graph_parse_ptr failed caused by '%s'\n", __LINE__, av_err2str(ret));
+        return ret;
+    }
+    //检查FilterGraph的配置。
+    if ((ret = avfilter_graph_config(filter_graph, NULL)) < 0) {
+        fprintf(stderr, "line %d, avfilter_graph_config error: %s\n", __LINE__, av_err2str(ret));
+        return ret;
+    }
+
+end:
+    avfilter_inout_free(&inputs);
+    avfilter_inout_free(&outputs);
+
+    return ret;
+}
+
 int main(int argc, char **argv)
 {
     AVOutputFormat *ofmt = NULL;
@@ -84,9 +174,6 @@ int main(int argc, char **argv)
     AVCodecContext *dec_codec_ctx, *enc_codec_ctx;
     AVCodec *dec_codec, *enc_codec;
 
-    AVFilterContext *buffersink_ctx;
-    AVFilterContext *buffersrc_ctx;
-    AVFilterGraph *filter_graph;
     const char *in_filename, *out_filename;
     // const char *filter_descr = "boxblur";
     const char *filter_descr = "hue='h=60:s=-3'";
@@ -225,67 +312,17 @@ int main(int argc, char **argv)
         goto end;
     }
 
-    // prepare for filter
     char args[512];
-    avfilter_register_all();
-    AVFilter *buffersrc  = avfilter_get_by_name("buffer");
-    AVFilter *buffersink = avfilter_get_by_name("buffersink");
-    AVFilterInOut *outputs = avfilter_inout_alloc();
-    AVFilterInOut *inputs  = avfilter_inout_alloc();
-    enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_YUV420P, AV_PIX_FMT_NONE };
-    AVBufferSinkParams *buffersink_params;
-
-    filter_graph = avfilter_graph_alloc();//为FilterGraph分配内存。
-    if (!outputs || !inputs || !filter_graph) {
-        ret = AVERROR(ENOMEM);
-        goto end;
-    }
     /* buffer video source: the decoded frames from the decoder will be inserted here. */
     snprintf(args, sizeof(args),
         "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
         dec_codec_ctx->width, dec_codec_ctx->height, dec_codec_ctx->pix_fmt,
         dec_codec_ctx->time_base.num, dec_codec_ctx->time_base.den,
         dec_codec_ctx->sample_aspect_ratio.num, dec_codec_ctx->sample_aspect_ratio.den);
-
-    //创建并向FilterGraph中添加一个Filter。
-    ret = avfilter_graph_create_filter(&buffersrc_ctx, buffersrc, "in",
-        args, NULL, filter_graph);
-    if (ret < 0) {
-        printf("line %d, Cannot create buffer source caused by '%s'\n", __LINE__, av_err2str(ret));
-        return ret;
-    }
-
-    /* buffer video sink: to terminate the filter chain. */
-    buffersink_params = av_buffersink_params_alloc();
-    buffersink_params->pixel_fmts = pix_fmts;
-    ret = avfilter_graph_create_filter(&buffersink_ctx, buffersink, "out",
-        NULL, buffersink_params, filter_graph);
-    av_free(buffersink_params);
-    if (ret < 0) {
-        printf("line %d, cannot create buffer sink caused by '%s'\n", __LINE__, av_err2str(ret));
-        return ret;
-    }
-
-    /* Endpoints for the filter graph. */
-    outputs->name       = av_strdup("in");
-    outputs->filter_ctx = buffersrc_ctx;
-    outputs->pad_idx    = 0;
-    outputs->next       = NULL;
-
-    inputs->name       = av_strdup("out");
-    inputs->filter_ctx = buffersink_ctx;
-    inputs->pad_idx    = 0;
-    inputs->next       = NULL;
-
-    //将一串通过字符串描述的Graph添加到FilterGraph中。
-    if ((ret = avfilter_graph_parse_ptr(filter_graph, filter_descr,
-        &inputs, &outputs, NULL)) < 0)
-        return ret;
-    //检查FilterGraph的配置。
-    if ((ret = avfilter_graph_config(filter_graph, NULL)) < 0)
-        return ret;
+    init_filter(args, filter_descr);
 
     frame_in = av_frame_alloc();
+    frame_out = av_frame_alloc();
     while (1) {
         AVStream *in_stream, *out_stream, *out_stream2;
         ret = av_read_frame(ifmt_ctx, &pkt);
@@ -297,60 +334,70 @@ int main(int argc, char **argv)
             av_packet_unref(&pkt);
             continue;
         }
-        fprintf(stdout, "line %d\n", __LINE__);
         pkt.stream_index = stream_mapping[pkt.stream_index];
-        fprintf(stdout, "line %d\n", __LINE__);
         if (pkt.stream_index == video_index) {
-            fprintf(stdout, "line %d\n", __LINE__);
-            dump_codec_ctx(dec_codec_ctx);
-            ret = avcodec_decode_video2(dec_codec_ctx, frame_in, &got_picture, &pkt);
-            fprintf(stdout, "line %d\n", __LINE__);
-            if (ret < 0) {
-                fprintf(stderr, "decode failed!\n");
-                break;
-            }
-            if (got_picture) {
-                break;
-            }
-            frame_in->pts = frame_in->best_effort_timestamp;
-            frame_in->width = 1280;
-            frame_in->height = 720;
-            frame_in->format = dec_codec_ctx->pix_fmt;
-            fprintf(stdout, "line %d, frame size %dx%d\n", __LINE__, frame_in->width, frame_in->height);
-            //向FilterGraph中加入一个AVFrame。
-            if ((ret = av_buffersrc_add_frame(buffersrc_ctx, frame_in)) < 0) {
-                fprintf(stderr, "line %d, Error while add frame caused by '%s'\n", __LINE__, av_err2str(ret));
+            if ((ret = avcodec_send_packet(dec_codec_ctx, &pkt)) < 0) {
+                fprintf(stderr, "line %d, Error while sending a packet to the decoder caused by '%s'\n",
+                    __LINE__, av_err2str(ret));
                 break;
             }
 
-            /* pull filtered pictures from the filtergraph  从FilterGraph中取出一个AVFrame。*/
-            ret = av_buffersink_get_frame(buffersink_ctx, frame_out);
-            if (ret < 0)
-                break;
-            
-            av_init_packet(&pkt2);
-            ret = avcodec_encode_video2(enc_codec_ctx, &pkt2, frame_out, &got_output);
-            if (ret < 0) {
-                printf("Error encoding frame\n");
-                return -1;
+            while (ret >= 0) {
+                ret = avcodec_receive_frame(dec_codec_ctx, frame_in);
+                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+                    break;
+                } else if (ret < 0) {
+                    fprintf(stderr, "line %d, Error while receiving a frame from the decoder caused by '%s'\n",
+                        __LINE__, av_err2str(ret));
+                    goto end;
+                }
+
+                if (ret >= 0) {
+                    frame_in->pts = frame_in->best_effort_timestamp;
+
+                    if (av_buffersrc_add_frame_flags(buffersrc_ctx, frame_in, AV_BUFFERSRC_FLAG_KEEP_REF) < 0) {
+                        fprintf(stderr, "line %d, av_buffersrc_add_frame_flags failed caused by '%s'\n", __LINE__, av_err2str(ret));
+                        break;
+                    }
+
+                    /* pull filtered pictures from the filtergraph  从FilterGraph中取出一个AVFrame。*/
+                    ret = av_buffersink_get_frame(buffersink_ctx, frame_out);
+                    if (ret < 0) {
+                        fprintf(stderr, "line %d, av_buffersrc_add_frame_flags failed caused by '%s'\n", __LINE__, av_err2str(ret));
+                        break;
+                    }
+
+                    av_init_packet(&pkt2);
+                    ret = avcodec_encode_video2(enc_codec_ctx, &pkt2, frame_out, &got_output);
+                    if (ret < 0) {
+                        printf("Error encoding frame\n");
+                        return -1;
+                    }
+                    if (got_output) {
+                        printf("Succeed to encode frame: \tsize:%5d\n",pkt2.size);
+                        av_frame_unref(frame_out);
+                    }
+
+                    out_stream2 = ofmt_ctx->streams[added_video_index];
+                    pkt2.pts = av_rescale_q_rnd(pkt.pts, in_stream->time_base, out_stream2->time_base, AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX);
+                    pkt2.dts = av_rescale_q_rnd(pkt.dts, in_stream->time_base, out_stream2->time_base, AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX);
+                    pkt2.duration = av_rescale_q(pkt.duration, in_stream->time_base, out_stream2->time_base);
+                    pkt2.pos = -1;
+                    pkt2.stream_index = added_video_index;
+
+                    log_packet(ofmt_ctx, &pkt2, "out");
+                    ret = av_interleaved_write_frame(ofmt_ctx, &pkt2);
+                    if (ret < 0) {
+                        fprintf(stderr, "line %d, Error muxing packet caused by '%s'\n",
+                            __LINE__, av_err2str(ret));
+                        break;
+                    }
+                    av_packet_unref(&pkt2);
+                    av_frame_unref(frame_in);
+                }
             }
-            if (got_output) {
-                printf("Succeed to encode frame: \tsize:%5d\n",pkt2.size);
-                av_free_packet(&pkt2);
-            }
-            out_stream2 = ofmt_ctx->streams[added_video_index];
-            // pkt2.pts = av_rescale_q_rnd(pkt.pts, in_stream->time_base, out_stream->time_base, AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX);
-            // pkt2.dts = av_rescale_q_rnd(pkt.dts, in_stream->time_base, out_stream->time_base, AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX);
-            // pkt2.duration = av_rescale_q(pkt.duration, in_stream->time_base, out_stream->time_base);
-            // pkt2.pos = -1;
-            ret = av_interleaved_write_frame(ofmt_ctx, &pkt2);
-            if (ret < 0) {
-                fprintf(stderr, "Error muxing packet\n");
-                break;
-            }
-            av_packet_unref(&pkt);
         }
-        fprintf(stdout, "line %d\n", __LINE__);
+
         out_stream = ofmt_ctx->streams[pkt.stream_index];
         log_packet(ifmt_ctx, &pkt, "in");
         /* copy packet */
@@ -361,12 +408,12 @@ int main(int argc, char **argv)
         log_packet(ofmt_ctx, &pkt, "out");
         ret = av_interleaved_write_frame(ofmt_ctx, &pkt);
         if (ret < 0) {
-            fprintf(stderr, "Error muxing packet\n");
+            fprintf(stderr, "line %d, Error muxing packet caused by '%s'\n", __LINE__, av_err2str(ret));
             break;
         }
         av_packet_unref(&pkt);
     }
-fprintf(stdout, "line %d\n", __LINE__);
+
     for (got_output = 1; got_output; i++) {
         ret = avcodec_encode_video2(enc_codec_ctx, &pkt, NULL, &got_output);
         if (ret < 0) {
