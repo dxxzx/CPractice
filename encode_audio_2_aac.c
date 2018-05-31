@@ -15,7 +15,11 @@ int flush_encoder(AVFormatContext *fmt_ctx, unsigned int stream_index) {
     int got_frame;
     AVPacket enc_pkt;
     if (!(fmt_ctx->streams[stream_index]->codec->codec->capabilities &
+#ifdef CODEC_CAP_DELAY
         CODEC_CAP_DELAY))
+#else
+        AV_CODEC_CAP_DELAY))
+#endif
         return 0;
     while (1) {
         enc_pkt.data = NULL;

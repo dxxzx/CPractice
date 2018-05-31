@@ -29,7 +29,7 @@ int main(int argc, char* argv[])
     char filename_in[] = "ws_output.yuv";
 
 #if TEST_HEVC
-    AVCodecID codec_id = AV_CODEC_ID_HEVC;
+    enum AVCodecID codec_id = AV_CODEC_ID_HEVC;
     char filename_out[] = "ws.hevc";
 #else
     AVCodecID codec_id = AV_CODEC_ID_H264;
